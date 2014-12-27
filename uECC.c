@@ -389,17 +389,13 @@ static int default_RNG(uint8_t *p_dest, unsigned p_size)
 
 static int default_RNG(uint8_t *p_dest, unsigned p_size)
 {
+	p_dest; p_size;
     return 0;
 }
 
 #endif
 
-static uECC_RNG_Function g_rng = &default_RNG;
-
-void uECC_set_rng(uECC_RNG_Function p_rng)
-{
-    g_rng = p_rng;
-}
+#define g_rng default_RNG
 
 #ifdef __GNUC__ /* Only support GCC inline asm for now */
     #if (uECC_ASM && (uECC_PLATFORM == uECC_avr))
@@ -622,7 +618,7 @@ static void vli_mult(uECC_word_t *p_result, uECC_word_t *p_left, uECC_word_t *p_
     /* Compute each digit of p_result in sequence, maintaining the carries. */
     for(k = 0; k < uECC_WORDS; ++k)
     {
-        for(i = 0; i <= k; ++i)
+        for (i = 0; i <= k; ++i)
         {
             muladd(p_left[i], p_right[k-i], &r0, &r1, &r2);
         }
@@ -1813,6 +1809,7 @@ int uECC_shared_secret(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_
     EccPoint l_public;
     uECC_word_t l_private[uECC_WORDS];
     uECC_word_t l_random[uECC_WORDS];
+    EccPoint l_product;
     
     g_rng((uint8_t *)l_random, sizeof(l_random));
     
@@ -1820,7 +1817,6 @@ int uECC_shared_secret(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_
     vli_bytesToNative(l_public.x, p_publicKey);
     vli_bytesToNative(l_public.y, p_publicKey + uECC_BYTES);
     
-    EccPoint l_product;
     EccPoint_mult(&l_product, &l_public, l_private, (vli_isZero(l_random) ? 0: l_random), vli_numBits(l_private, uECC_WORDS));
     
     vli_nativeToBytes(p_secret, l_product.x);
@@ -1841,15 +1837,16 @@ void uECC_compress(const uint8_t p_publicKey[uECC_BYTES*2], uint8_t p_compressed
 void uECC_decompress(const uint8_t p_compressed[uECC_BYTES+1], uint8_t p_publicKey[uECC_BYTES*2])
 {
     EccPoint l_point;
-    vli_bytesToNative(l_point.x, p_compressed + 1);
     
 #if (uECC_CURVE == uECC_secp256k1)
+    vli_bytesToNative(l_point.x, p_compressed + 1);
     vli_modSquare_fast(l_point.y, l_point.x); /* r = x^2 */
     vli_modMult_fast(l_point.y, l_point.y, l_point.x); /* r = x^3 */
     vli_modAdd(l_point.y, l_point.y, curve_b, curve_p); /* r = x^3 + b */
 #else
     uECC_word_t _3[uECC_WORDS] = {3}; /* -a = 3 */
     
+    vli_bytesToNative(l_point.x, p_compressed + 1);
     vli_modSquare_fast(l_point.y, l_point.x); /* y = x^2 */
     vli_modSub_fast(l_point.y, l_point.y, _3); /* y = x^2 - 3 */
     vli_modMult_fast(l_point.y, l_point.y, l_point.x); /* y = x^3 - 3x */
@@ -2070,6 +2067,8 @@ static void vli_modMult_n(uECC_word_t *p_result, uECC_word_t *p_left, uECC_word_
     uECC_word_t l_modMultiple[2 * uECC_N_WORDS];
     uECC_word_t l_tmp[2 * uECC_N_WORDS];
     uECC_word_t *v[2] = {l_tmp, l_product};
+    bitcount_t i;
+    uECC_word_t l_index = 1;
     
     vli_mult_n(l_product, p_left, p_right);
     vli_clear_n(l_modMultiple);
@@ -2078,8 +2077,6 @@ static void vli_modMult_n(uECC_word_t *p_result, uECC_word_t *p_left, uECC_word_
     l_modMultiple[2 * uECC_N_WORDS - 1] |= HIGH_BIT_SET;
     l_modMultiple[uECC_N_WORDS] = HIGH_BIT_SET;
     
-    bitcount_t i;
-    uECC_word_t l_index = 1;
     for(i=0; i<=((((bitcount_t)uECC_N_WORDS) << uECC_WORD_BITS_SHIFT) + (uECC_WORD_BITS - 1)); ++i)
     {
         uECC_word_t l_borrow = vli2_sub_n(v[1-l_index], v[l_index], l_modMultiple);
@@ -2143,6 +2140,7 @@ static void vli_modMult_n(uECC_word_t *p_result, uECC_word_t *p_left, uECC_word_
 }
 #endif /* (uECC_CURVE != uECC_secp160r1) */
 
+#if ECC_SIGN
 int uECC_sign(const uint8_t p_privateKey[uECC_BYTES], const uint8_t p_hash[uECC_BYTES], uint8_t p_signature[uECC_BYTES*2])
 {
     uECC_word_t k[uECC_N_WORDS];
@@ -2151,7 +2149,8 @@ int uECC_sign(const uint8_t p_privateKey[uECC_BYTES], const uint8_t p_hash[uECC_
     uECC_word_t *k2[2] = {l_tmp, s};
     EccPoint p;
     uECC_word_t l_tries = 0;
-    
+   uECC_word_t l_carry;
+
     do
     {
     repeat:
@@ -2174,7 +2173,7 @@ int uECC_sign(const uint8_t p_privateKey[uECC_BYTES], const uint8_t p_hash[uECC_
         
         /* make sure that we don't leak timing information about k. See http://eprint.iacr.org/2011/232.pdf */
         vli_add_n(l_tmp, k, curve_n);
-        uECC_word_t l_carry = (l_tmp[uECC_WORDS] & 0x02);
+        l_carry = (l_tmp[uECC_WORDS] & 0x02);
         vli_add_n(s, l_tmp, curve_n);
     
         /* p = k * G */
@@ -2186,7 +2185,7 @@ int uECC_sign(const uint8_t p_privateKey[uECC_BYTES], const uint8_t p_hash[uECC_
         }
         
         /* make sure that we don't leak timing information about k. See http://eprint.iacr.org/2011/232.pdf */
-        uECC_word_t l_carry = vli_add(l_tmp, k, curve_n);
+        l_carry = vli_add(l_tmp, k, curve_n);
         vli_add(s, l_tmp, curve_n);
     
         /* p = k * G */
@@ -2290,7 +2289,8 @@ int uECC_verify(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_hash[uE
     XYcZ_add(tx, ty, l_sum.x, l_sum.y);
     vli_modInv(z, z, curve_p); /* Z = 1/Z */
     apply_z(l_sum.x, l_sum.y, z);
-    
+   
+	{
     /* Use Shamir's trick to calculate u1*G + u2*Q */
     EccPoint *l_points[4] = {0, &curve_G, &l_public, &l_sum};
     bitcount_t l_numBits = smax(vli_numBits(u1, uECC_N_WORDS), vli_numBits(u2, uECC_N_WORDS));
@@ -2301,12 +2301,15 @@ int uECC_verify(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_hash[uE
     vli_clear(z);
     z[0] = 1;
 
+	{
     bitcount_t i;
     for(i = l_numBits - 2; i >= 0; --i)
     {
-        EccPoint_double_jacobian(rx, ry, z);
+        uECC_word_t l_index;
+		
+		EccPoint_double_jacobian(rx, ry, z);
         
-        uECC_word_t l_index = (!!vli_testBit(u1, i)) | ((!!vli_testBit(u2, i)) << 1);
+        l_index = (!!vli_testBit(u1, i)) | ((!!vli_testBit(u2, i)) << 1);
         l_point = l_points[l_index];
         if(l_point)
         {
@@ -2318,6 +2321,8 @@ int uECC_verify(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_hash[uE
             vli_modMult_fast(z, z, tz);
         }
     }
+	}
+	}
 
     vli_modInv(z, z, curve_p); /* Z = 1/Z */
     apply_z(rx, ry, z);
@@ -2333,3 +2338,4 @@ int uECC_verify(const uint8_t p_publicKey[uECC_BYTES*2], const uint8_t p_hash[uE
     /* Accept only if v == r. */
     return (vli_cmp(rx, r) == 0);
 }
+#endif
